@@ -1,0 +1,26 @@
+# 本地真实配置文件（包含个人chat_id等隐私信息，切勿提交）
+config.json
+
+# Python 缓存与字节码
+__pycache__/
+*.py[cod]
+*.class
+*.log
+
+# 开发与探索过程中的临时测试脚本
+test_*.py
+inspect_*.py
+check_btn.py
+clean.py
+find_el.py
+send_list.py
+set_commands.py
+*.txt
+!requirements.txt
+clean_sections.json
+
+# 编辑器与IDE配置
+.vscode/
+.idea/
+*.swp
+

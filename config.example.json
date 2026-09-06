@@ -1,0 +1,17 @@
+﻿{
+  bot_token: ",
+ allowed_chat_ids: [
+ 123456789
+ ],
+ proxy: http://127.0.0.1:12334,
+ port: 28888,
+ timeout_seconds: 180,
+ intercept_tools: [
+ run_command,
+ write_to_file,
+ replace_file_content
+ ],
+ default_on_timeout: ask,
+ auto_bind_on_start: false,
+ sync_messages: true
+}
