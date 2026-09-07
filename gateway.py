@@ -367,6 +367,18 @@ class ApprovalGateway:
         logger.info("Antigravity 聊天框实时同步线程已启动...")
         file_positions = {}  # path -> 已读取的字节偏移量
 
+        # 启动初始化：仅将启动前已存在的历史会话游标置为末尾，避免历史旧消息刷屏
+        try:
+            initial_files = glob.glob(os.path.join(BRAIN_DIR, "*", ".system_generated", "logs", "transcript.jsonl"))
+            for p in initial_files:
+                try:
+                    file_positions[p] = os.path.getsize(p)
+                except OSError:
+                    pass
+            logger.info("已完成 %d 个历史会话游标初始化，后续新增回复将实时推送", len(file_positions))
+        except Exception as init_e:
+            logger.error("初始化历史会话游标异常: %s", init_e)
+
         def session_label(path):
             """从 transcript 路径提取会话 ID，并尝试匹配侧边栏真实标题"""
             try:
@@ -389,18 +401,15 @@ class ApprovalGateway:
 
                 candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
-                for current_path in candidates[:3]:
+                # 监听最近活跃的 10 个会话，避免会话挤压
+                for current_path in candidates[:10]:
                     try:
                         size = os.path.getsize(current_path)
                     except OSError:
                         continue
 
-                    if current_path not in file_positions:
-                        # 首次发现该文件，从末尾开始，只推送后续新增内容
-                        file_positions[current_path] = size
-                        continue
-
-                    offset = file_positions[current_path]
+                    # 若为运行期间新创建的会话，offset 默认为 0，保证新会话第一条回复绝不遗漏
+                    offset = file_positions.get(current_path, 0)
                     if size < offset:
                         # 文件被重写/轮转（行数变少），重置游标避免永久失联
                         logger.info("转录本被重写或轮转，重置读取位置: %s", current_path)
@@ -436,8 +445,8 @@ class ApprovalGateway:
                                 if content and not item.get("tool_calls"):
                                     content = content.strip()
                                     if content:
-                                        # 检查用户是否开启了消息同步
-                                        if not self.config.get("sync_messages", True):
+                                        # 检查用户是否开启了消息同步（实时从文件读取最新状态）
+                                        if not load_config().get("sync_messages", True):
                                             logger.info("用户已暂停消息接收，忽略向 Telegram 推送 (字数: %d)", len(content))
                                             continue
                                         label = session_label(current_path)
@@ -558,7 +567,9 @@ class ApprovalGateway:
                 def do_inject(t):
                     ok, reason = send_prompt(t)
                     if ok:
-                        self.tg.send_message(chat_id, "🚀 <b>已成功提交！</b>\nAntigravity 已开始执行，请稍候...", parse_mode="HTML")
+                        is_sync = load_config().get("sync_messages", True)
+                        mute_hint = "" if is_sync else "\n\n💡 <i>提示：当前消息接收处于【暂停】状态，电脑回复不会推送到手机。可随时点击下方【▶️ 恢复接收消息】。</i>"
+                        self.tg.send_message(chat_id, f"🚀 <b>已成功提交！</b>\nAntigravity 已开始执行，请稍候...{mute_hint}", reply_markup=get_bottom_keyboard(is_sync), parse_mode="HTML")
                     else:
                         self.tg.send_message(chat_id, f"⚠️ 提交失败: {reason}")
                 
