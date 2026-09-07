@@ -820,8 +820,8 @@ def main():
     logger.info("  Antigravity Telegram 1:1 对等镜像网关运行中")
     logger.info("===========================================")
     
-    # 自动注册 Telegram 官方菜单命令
-    setup_bot_commands(gateway_instance.tg)
+    # 异步注册 Telegram 官方菜单命令（避免因代理网络延迟阻塞 HTTP 端口监听）
+    threading.Thread(target=setup_bot_commands, args=(gateway_instance.tg,), daemon=True).start()
 
     t_tg = threading.Thread(target=gateway_instance.poll_telegram_loop, daemon=True)
     t_tg.start()
