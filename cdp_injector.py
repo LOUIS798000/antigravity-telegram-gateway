@@ -55,6 +55,7 @@ async def send_to_antigravity(prompt_text):
 
     async with websockets.connect(ws_url) as ws:
         # 1. 如果当前正在运行（有取消按钮），等待其空闲（最多等 15 秒）
+        is_idle = True
         for _ in range(15):
             js_check_idle = """
             (() => {
@@ -69,12 +70,16 @@ async def send_to_antigravity(prompt_text):
                 break
             await asyncio.sleep(1)
 
+        if not is_idle:
+            return False, "电脑端当前正在全力思考或执行任务中，为避免打乱生成，请稍候等其完成后再发送。"
+
         # 2. 聚焦输入框；若电脑端已有未发送内容则拒绝注入，避免覆盖用户正在输入的草稿
         js_focus = """
         (() => {
-            const el = document.querySelector('div[contenteditable="true"]');
+            const el = document.querySelector('div[contenteditable="true"], textarea, [role="textbox"]');
             if (!el) return {found: false};
-            const hasContent = (el.innerText || '').trim().length > 0;
+            const text = el.isContentEditable ? (el.innerText || '') : (el.value || '');
+            const hasContent = text.trim().length > 0;
             if (hasContent) return {found: true, hasContent: true};
             el.focus();
             return {found: true, hasContent: false};
@@ -148,8 +153,21 @@ async def send_to_antigravity(prompt_text):
 
         return True, "消息已成功输入并触发发送"
 
+async def async_send_prompt(text):
+    return await send_to_antigravity(text)
+
 def send_prompt(text):
-    return asyncio.run(send_to_antigravity(text))
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, send_to_antigravity(text)).result()
+    else:
+        return asyncio.run(send_to_antigravity(text))
 
 if __name__ == "__main__":
     import sys

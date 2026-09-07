@@ -76,24 +76,63 @@ async def async_switch_session(cid):
     if not ws_url:
         return False, "未找到活动界面"
     async with websockets.connect(ws_url) as ws:
-        # 优先点击侧边栏链接（保留单页路由与section状态）
+        # 优先点击侧边栏链接（保留单页路由与section状态，杜绝白屏重载）
         js = f"""
-        (() => {{
-            const link = document.querySelector('a[href*="/c/{cid}"]');
+        (async () => {{
+            let link = document.querySelector('a[href*="/c/{cid}"]');
             if (link) {{
+                link.scrollIntoView({{ behavior: 'instant', block: 'center' }});
                 link.click();
-                return {{ok: true, method: 'click'}};
+                return {{ok: true, method: 'direct_click'}};
             }}
+            // 1. 若当前视口未找到，自动展开所有折叠的项目卡片
+            const cards = Array.from(document.querySelectorAll('button[data-project-card="true"]'));
+            for (const c of cards) {{{{
+                if (c.getAttribute('aria-expanded') === 'false') {{{{
+                    try {{{{ c.click(); }}}} catch(e) {{{{}}}}
+                }}}}
+            }}}}
+            await new Promise(r => setTimeout(r, 200));
+            link = document.querySelector('a[href*="/c/{cid}"]');
+            if (link) {{
+                link.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                link.click();
+                return {{ok: true, method: 'expanded_click'}};
+            }}
+
+            // 2. 尝试在滚动容器中滚动查找（应对虚拟滚动裁剪）
+            const sc = document.querySelector('.relative.w-full.h-full.overflow-y-auto.overscroll-none.px-2');
+            if (sc && sc.scrollHeight > sc.clientHeight) {{
+                sc.scrollTop = sc.scrollHeight;
+                sc.dispatchEvent(new Event('scroll', {{ bubbles: true }}));
+                await new Promise(r => setTimeout(r, 250));
+                link = document.querySelector('a[href*="/c/{cid}"]');
+                if (link) {{
+                    link.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                    link.click();
+                    return {{ok: true, method: 'scrolled_click'}};
+                }}
+            }}
+
+            // 3. 兜底回退：修改 location.href 强制进入
             window.location.href = window.location.origin + "/c/{cid}";
             return {{ok: true, method: 'href'}};
         }})()
         """
-        msg = {"id": 1, "method": "Runtime.evaluate", "params": {"expression": js, "returnByValue": True}}
+        msg = {"id": 1, "method": "Runtime.evaluate", "params": {"expression": js, "awaitPromise": True, "returnByValue": True}}
         await ws.send(json.dumps(msg))
         await ws.recv()
         return True, "成功"
 
 def switch_session(cid):
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, async_switch_session(cid)).result()
     return asyncio.run(async_switch_session(cid))
 
 # 新建会话
@@ -123,6 +162,14 @@ async def async_new_session():
         return True, "成功"
 
 def new_session():
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, async_new_session()).result()
     return asyncio.run(async_new_session())
 
 class TelegramClient:
@@ -157,35 +204,55 @@ class TelegramClient:
                 else:
                     logger.warning("Telegram API 错误: %s", res)
                     return None
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8")
+            except Exception:
+                pass
+            if "message is not modified" in err_body.lower():
+                return None
+            logger.error("调用 Telegram API %s HTTP 错误 (%s): %s", method, e.code, err_body or e)
+            return None
         except Exception as e:
+            if "message is not modified" in str(e).lower():
+                return None
             logger.error("调用 Telegram API %s 异常: %s", method, e)
             return None
 
     def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+        import re
         payload = {"chat_id": chat_id, "text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
         res = self.request("sendMessage", payload)
-        # 如果携带 parse_mode 发送失败（例如 HTML/Markdown 解析错误），自动降级为纯文本重试，杜绝漏发
+        # 如果携带 parse_mode 发送失败（例如复杂的代码、不平衡的 HTML 标签），自动深度清理标签降级为纯文本重试
         if res is None and parse_mode:
-            # 去除可能的 HTML 标签兜底
-            clean_text = text.replace("<b>", "").replace("</b>", "").replace("<i>", "").replace("</i>", "")
+            clean_text = re.sub(r'<[^>]+>', '', text)
             plain_payload = {"chat_id": chat_id, "text": clean_text}
             if reply_markup:
                 plain_payload["reply_markup"] = reply_markup
-            logger.info("parse_mode=%s 发送失败，尝试降级为纯文本发送到 %s", parse_mode, chat_id)
+            logger.info("parse_mode=%s 发送失败，自动降级为纯文本兜底发送到 %s", parse_mode, chat_id)
             res = self.request("sendMessage", plain_payload)
         return res
 
     def edit_message_text(self, chat_id, message_id, text, reply_markup=None, parse_mode=None):
+        import re
         payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
-        return self.request("editMessageText", payload)
+        res = self.request("editMessageText", payload)
+        if res is None and parse_mode:
+            clean_text = re.sub(r'<[^>]+>', '', text)
+            plain_payload = {"chat_id": chat_id, "message_id": message_id, "text": clean_text}
+            if reply_markup is not None:
+                plain_payload["reply_markup"] = reply_markup
+            res = self.request("editMessageText", plain_payload)
+        return res
 
     def answer_callback_query(self, callback_query_id, text=None, show_alert=False):
         payload = {"callback_query_id": callback_query_id}
@@ -293,9 +360,9 @@ def setup_bot_commands(tg_client):
     except Exception as e:
         logger.error("设置 Telegram 菜单命令异常: %s", e)
 
-def build_project_all_payload(proj_name, page=1, page_size=30):
+def build_project_all_payload(proj_name, page=1, page_size=10):
     """
-    构造某个项目下所有会话的详细列表和按钮（分页展示，防止按钮数超过 Telegram 上限）
+    构造某个项目下所有会话的详细列表和按钮（每页10个精致分页，完美贴合手机屏幕高度）
     """
     projects = session_service.get_projects(force_refresh=False)
     target_proj = next((p for p in projects if p["project"].lower() == proj_name.lower()), None)
