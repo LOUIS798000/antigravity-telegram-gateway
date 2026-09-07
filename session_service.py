@@ -23,7 +23,22 @@ async def _async_fetch_projects():
     async with websockets.connect(ws_url) as ws:
         js = """
         (async () => {
-            // 点击侧边栏展开所有“查看全部”
+            const sc = document.querySelector('.relative.w-full.h-full.overflow-y-auto.overscroll-none.px-2') ||
+                       Array.from(document.querySelectorAll('*')).find(el => {
+                           const r = el.getBoundingClientRect();
+                           return r.left >= 0 && r.left < 400 && el.scrollHeight > el.clientHeight && el.clientHeight > 200;
+                       });
+
+            // 1. 自动展开所有折叠状态的项目（例如折叠状态的 d: 盘）
+            const projectBtns = Array.from(document.querySelectorAll('button[data-project-card="true"]'));
+            for (const pb of projectBtns) {
+                if (pb.getAttribute('aria-expanded') === 'false') {
+                    try { pb.click(); } catch(e) {}
+                }
+            }
+            await new Promise(r => setTimeout(r, 350));
+
+            // 2. 点击侧边栏展开所有“查看全部”/“View all”
             const viewAllButtons = Array.from(document.querySelectorAll('button')).filter(b => {
                 const t = b.innerText ? b.innerText.trim() : '';
                 return (t.includes('查看全部') || t.includes('View all')) && b.getBoundingClientRect().left < 400;
@@ -32,65 +47,89 @@ async def _async_fetch_projects():
                 try { b.click(); } catch(e) {}
             }
             if (viewAllButtons.length > 0) {
-                // 等待侧边栏渲染稳定（链接数量连续两轮不变或超时），避免读到不完整列表
-                let last = -1, stable = 0;
-                for (let i = 0; i < 12 && stable < 2; i++) {
-                    await new Promise(r => setTimeout(r, 100));
-                    const n = document.querySelectorAll('a[href^="/c/"]').length;
-                    if (n === last) { stable++; } else { stable = 0; last = n; }
-                }
+                await new Promise(r => setTimeout(r, 350));
             }
 
-            // 提取所有的侧边栏盘符标题 (例如 C:, d:, D:)
-            const sidebarHeaders = Array.from(document.querySelectorAll('*')).filter(el => {
-                const rect = el.getBoundingClientRect();
-                if (rect.left < 0 || rect.left > 400 || rect.width === 0) return false;
-                const t = el.innerText ? el.innerText.trim() : '';
-                return /^[a-zA-Z]:$/.test(t) && el.children.length === 0;
-            });
-            sidebarHeaders.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+            // 3. 提取所有侧边栏项目标题 (例如 C:, d:, D:)
+            const getSidebarHeaders = () => {
+                const allElements = Array.from(document.querySelectorAll('button[data-project-card="true"], span, div'));
+                return allElements.filter(el => {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.left < 0 || rect.left > 400 || rect.width === 0) return false;
+                    const t = el.innerText ? el.innerText.trim() : '';
+                    return /^[a-zA-Z]:$/i.test(t);
+                }).map(el => ({
+                    name: el.innerText.trim().toUpperCase(),
+                    top: el.getBoundingClientRect().top
+                })).sort((a, b) => a.top - b.top);
+            };
 
-            const allLinks = Array.from(document.querySelectorAll('a[href^="/c/"]')).filter(a => {
-                const rect = a.getBoundingClientRect();
-                return rect.left >= 0 && rect.left < 400 && rect.width > 0;
-            });
+            // 4. 虚拟滚动分段采集：顶部、中部、底部合并，解决超长列表虚拟裁剪导致看不到D盘的问题
+            const projectMap = {}; // projName -> Map(cid -> item)
 
-            const results = [];
-            for (let i = 0; i < sidebarHeaders.length; i++) {
-                const header = sidebarHeaders[i];
-                const nextHeader = sidebarHeaders[i + 1] || null;
-                const topMin = header.getBoundingClientRect().top;
-                const topMax = nextHeader ? nextHeader.getBoundingClientRect().top : 999999;
-
-                const projLinks = allLinks.filter(a => {
-                    const top = a.getBoundingClientRect().top;
-                    return top >= topMin && top < topMax;
+            const scanCurrentViewport = () => {
+                const headers = getSidebarHeaders();
+                const allLinks = Array.from(document.querySelectorAll('a[href^="/c/"]')).filter(a => {
+                    const rect = a.getBoundingClientRect();
+                    return rect.left >= 0 && rect.left < 400 && rect.width > 0;
                 });
 
-                const items = [];
-                for (const a of projLinks) {
-                    let textNode = a;
-                    while (textNode && (!textNode.innerText || textNode.innerText.trim() === '')) {
-                        textNode = textNode.parentElement;
-                    }
-                    const lines = textNode ? textNode.innerText.split('\\n').map(s => s.trim()).filter(Boolean) : [];
-                    const cid = a.getAttribute('href').replace('/c/', '').split('?')[0];
-                    const title = lines[0] || cid.substring(0, 8);
-                    const time = lines[1] || '';
-                    if (!items.some(it => it.id === cid)) {
-                        items.push({
-                            id: cid,
-                            title: title,
-                            time: time
-                        });
+                for (let i = 0; i < headers.length; i++) {
+                    const h = headers[i];
+                    const nextH = headers[i + 1] || null;
+                    const topMin = h.top;
+                    const topMax = nextH ? nextH.top : 999999;
+
+                    if (!projectMap[h.name]) projectMap[h.name] = new Map();
+
+                    const matchedLinks = allLinks.filter(a => {
+                        const t = a.getBoundingClientRect().top;
+                        return t >= topMin && t < topMax;
+                    });
+
+                    for (const a of matchedLinks) {
+                        const cid = a.getAttribute('href').replace('/c/', '').split('?')[0];
+                        let textNode = a;
+                        while (textNode && (!textNode.innerText || textNode.innerText.trim() === '')) {
+                            textNode = textNode.parentElement;
+                        }
+                        const lines = textNode ? textNode.innerText.split('\\n').map(s => s.trim()).filter(Boolean) : [];
+                        const title = lines[0] || cid.substring(0, 8);
+                        const time = lines[1] || '';
+                        projectMap[h.name].set(cid, { id: cid, title: title, time: time });
                     }
                 }
+            };
 
-                if (items.length > 0) {
+            // 阶段一：扫描顶部可见区域
+            const origScrollTop = sc ? sc.scrollTop : 0;
+            if (sc) sc.scrollTop = 0;
+            await new Promise(r => setTimeout(r, 150));
+            scanCurrentViewport();
+
+            // 阶段二：滚动到中部扫描
+            if (sc && sc.scrollHeight > sc.clientHeight) {
+                sc.scrollTop = Math.floor(sc.scrollHeight / 2);
+                await new Promise(r => setTimeout(r, 250));
+                scanCurrentViewport();
+
+                // 阶段三：滚动到底部扫描（捕获完整的 D 盘项目列表）
+                sc.scrollTop = sc.scrollHeight;
+                await new Promise(r => setTimeout(r, 250));
+                scanCurrentViewport();
+
+                // 恢复原始滚动位置，避免影响电脑端用户操作
+                sc.scrollTop = origScrollTop;
+            }
+
+            // 组装最终结果
+            const results = [];
+            for (const [proj, map] of Object.entries(projectMap)) {
+                if (map.size > 0) {
                     results.push({
-                        project: header.innerText.trim(),
-                        count: items.length,
-                        items: items
+                        project: proj,
+                        count: map.size,
+                        items: Array.from(map.values())
                     });
                 }
             }
