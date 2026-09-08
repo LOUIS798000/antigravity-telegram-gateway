@@ -85,8 +85,8 @@ async def async_switch_session(cid):
                 link.click();
                 return {{ok: true, method: 'direct_click'}};
             }}
-            // 1. 若当前视口未找到，自动展开所有折叠的项目卡片
-            const cards = Array.from(document.querySelectorAll('button[data-project-card="true"]'));
+            // 1. 若当前视口未找到，自动展开所有折叠的项目卡片及置顶栏
+            const cards = Array.from(document.querySelectorAll('button[data-project-card="true"], h2 button'));
             for (const c of cards) {{{{
                 if (c.getAttribute('aria-expanded') === 'false') {{{{
                     try {{{{ c.click(); }}}} catch(e) {{{{}}}}
@@ -292,7 +292,15 @@ def build_list_overview_payload(force_refresh=False):
     for p in projects:
         proj_name = p["project"]
         total_cnt = p.get("count", len(p["items"]))
-        text_lines.append(f"📁 <b>工作区：{html.escape(proj_name)}</b> (共 {total_cnt} 个会话)")
+        is_pinned_group = "固定" in proj_name or "置顶" in proj_name or "PINNED" in proj_name.upper()
+
+        if is_pinned_group:
+            clean_name = proj_name.replace("📌", "").strip()
+            text_lines.append(f"📌 <b>{html.escape(clean_name)}</b> (共 {total_cnt} 个)")
+            prefix = "📌"
+        else:
+            text_lines.append(f"📁 <b>工作区：{html.escape(proj_name)}</b> (共 {total_cnt} 个会话)")
+            prefix = proj_name.replace(":", "").upper()
 
         # 概览页展示前 5 个
         display_items = p["items"][:5]
@@ -303,7 +311,6 @@ def build_list_overview_payload(force_refresh=False):
         text_lines.append("")  # 空行
 
         # 对应的切换按钮（每行 1 个，带真实标题，防止太长截取前 20 字符）
-        prefix = proj_name.replace(":", "").upper()
         for idx, it in enumerate(display_items, 1):
             short_title = it['title']
             if len(short_title) > 18:

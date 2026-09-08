@@ -59,6 +59,27 @@ async def _async_fetch_projects():
                     top: c.getBoundingClientRect().top
                 })).sort((a, b) => a.top - b.top);
 
+                // 探查置顶/固定对话区域（Pinned Conversations），置顶对话位于项目卡片上方
+                const pinBtn = Array.from(document.querySelectorAll('h2 button, button, span, div')).find(el => {
+                    const r = el.getBoundingClientRect();
+                    if (r.left < 0 || r.left > 400 || r.width === 0) return false;
+                    const t = (el.innerText || '').trim();
+                    return (t === '已固定对话' || t === 'Pinned Conversations' || t === 'Pinned' || t === '固定对话') && el.children.length <= 1;
+                });
+                if (pinBtn) {
+                    const btn = pinBtn.tagName === 'BUTTON' ? pinBtn : pinBtn.closest('button');
+                    if (btn && btn.getAttribute('aria-expanded') === 'false') {
+                        try { btn.click(); } catch(e) {}
+                    }
+                    const r = pinBtn.getBoundingClientRect();
+                    if (r.top >= 0 && r.top < 600) {
+                        headers.unshift({
+                            name: '📌 已固定对话',
+                            top: r.top
+                        });
+                    }
+                }
+
                 // 兜底：若未匹配到卡片，正则匹配盘符
                 if (headers.length === 0) {
                     headers = Array.from(document.querySelectorAll('span, div')).filter(el => {
