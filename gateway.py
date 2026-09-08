@@ -212,6 +212,15 @@ class TelegramClient:
                 pass
             if "message is not modified" in err_body.lower():
                 return None
+            if e.code == 429:
+                try:
+                    err_data = json.loads(err_body)
+                    retry_after = int(err_data.get("parameters", {}).get("retry_after", 3))
+                    logger.warning("Telegram API 触发 429 限频，自动等待 %d 秒后重试...", retry_after)
+                    time.sleep(retry_after + 1)
+                    return self.request(method, params)
+                except Exception:
+                    pass
             logger.error("调用 Telegram API %s HTTP 错误 (%s): %s", method, e.code, err_body or e)
             return None
         except Exception as e:
