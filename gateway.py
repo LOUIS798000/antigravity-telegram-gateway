@@ -185,7 +185,7 @@ class TelegramClient:
             handlers.append(urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy}))
         self.opener = urllib.request.build_opener(*handlers)
 
-    def request(self, method, params=None):
+    def request(self, method, params=None, max_retries=3):
         if not self.token:
             return None
         url = f"{self.base_url}/{method}"
@@ -212,13 +212,13 @@ class TelegramClient:
                 pass
             if "message is not modified" in err_body.lower():
                 return None
-            if e.code == 429:
+            if e.code == 429 and max_retries > 0:
                 try:
                     err_data = json.loads(err_body)
                     retry_after = int(err_data.get("parameters", {}).get("retry_after", 3))
-                    logger.warning("Telegram API 触发 429 限频，自动等待 %d 秒后重试...", retry_after)
+                    logger.warning("Telegram API 触发 429 限频，自动等待 %d 秒后重试 (剩余重试次数: %d)...", retry_after, max_retries - 1)
                     time.sleep(retry_after + 1)
-                    return self.request(method, params)
+                    return self.request(method, params, max_retries=max_retries - 1)
                 except Exception:
                     pass
             logger.error("调用 Telegram API %s HTTP 错误 (%s): %s", method, e.code, err_body or e)
